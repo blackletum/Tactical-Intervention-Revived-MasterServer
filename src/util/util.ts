@@ -17,3 +17,7 @@ export function getRedis(ctx: Context) {
 export function getRemoteIp(ctx: Context) {
     return ctx.req.raw.headers.get("cf-connecting-ip") || ctx.req.raw.headers.get("CF-Connecting-IP") || "unknown"
 }
+
+export function getCurTime() {
+    return Math.floor(Date.now() / 1000)
+}

@@ -8,7 +8,7 @@ const strictCache = new Map()
 export async function rateLimit(ctx: Context, next: Next) {
     const rateLimit = new Ratelimit({
         prefix: "generic",
-        redis: (<any>ctx).req.redis,
+        redis: ctx.req.redis,
         limiter: Ratelimit.fixedWindow(9, "30 s"),
         ephemeralCache: cache
     })
@@ -23,8 +23,8 @@ export async function rateLimit(ctx: Context, next: Next) {
 export async function rateLimitStrict(ctx: Context, next: Next) {
     const rateLimit = new Ratelimit({
         prefix: "strict",
-        redis: (<any>ctx).req.redis,
-        limiter: Ratelimit.tokenBucket(1, "36 s", 4),
+        redis: ctx.req.redis,
+        limiter: Ratelimit.tokenBucket(1, "40 s", 4),
         ephemeralCache: strictCache
     })
 

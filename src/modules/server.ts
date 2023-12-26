@@ -1,12 +1,11 @@
-import app, { KV } from "../index"
 import { version } from "../../package.json"
 import { StatusCodes } from "http-status-codes"
 import { Hono } from "hono"
-import { env } from "hono/adapter"
 import { Bindings } from "hono/types"
-import { isIP } from "is-ip"
-import { getRedis, getRemoteIp, kvNamespace } from "../util/util"
+import { getCurTime, getRedis, getRemoteIp, kvNamespace } from "../util/util"
 import { rateLimitStrict } from "../middleware/ratelimit"
+import { connect } from "cloudflare:sockets"
+import { LRUCache } from "lru-cache"
 
 const HEARTBEAT_TTL = 60
 
@@ -18,6 +17,7 @@ interface Server {
 }
 
 export const serverApi = new Hono<{Bindings: Bindings}>()
+const serverCache = new LRUCache({ttl: 1000 * 30, ttlAutopurge: true})
 
 // TODO: Should we use KV here?
 // I'm thinking use D1 database instead, it has far more read/writes
@@ -29,12 +29,22 @@ export const serverApi = new Hono<{Bindings: Bindings}>()
 // https://www.mongodb.com/developer/products/atlas/cloudflare-worker-rest-api/
 
 serverApi.get("/list", async (ctx) => {
-    const serverList = await kvNamespace(ctx).SERVERS.list()
+    const curTime = getCurTime()
+    const serverList = await ctx.req.redis.zrange(
+        "serversAliveRegister",
+        curTime, 
+        curTime + HEARTBEAT_TTL,
+        {byScore: true}
+    )
+
     let servers: Server[] = []
 
-    for (const server of serverList.keys) {
-        console.log("server", server)
-        servers.push(<any>server.metadata)
+    for (const serverUid of serverList) {
+        const cachedServer = serverCache.get(<string>serverUid)
+        const serverVal = cachedServer || await ctx.req.redis.get(<string>serverUid)
+        if (!serverVal) continue
+
+        servers.push(<Server>serverVal)
     }
 
     return ctx.json({
@@ -46,9 +56,6 @@ serverApi.get("/list", async (ctx) => {
 // apply our strict rate-limiting to heartbeats
 serverApi.post("/heartbeat", rateLimitStrict, async (ctx) => {
     let body
-
-    // ip rate limiting?
-    console.log("IP sending heartbeat:", ctx.req.raw.headers.get("cf-connecting-ip"))
     
     try {
         body = await ctx.req.json<Server>()
@@ -56,36 +63,44 @@ serverApi.post("/heartbeat", rateLimitStrict, async (ctx) => {
 
     if (!body) return ctx.text("", StatusCodes.BAD_REQUEST)
 
-    // TODO: Should we actually read this IP, or should we just be getting the IP (above)
-    // and using that?
-    // TODO: Check this IP value for console param injection!
-    // This validation must be harsh!
+    // in development, we cant get the remote ip, we'll use this fake ip instead!
+    const remoteIp = ctx.env.DEV ? "127.88.88.88" : getRemoteIp(ctx)
+
     if ((!body.port || typeof(body.port) !== "number")
-    || (body.port < 0 || body.port > 9999))
+    || (body.port < 0 || body.port > 9999)
+    || (remoteIp === "unknown"))
         return ctx.text("", StatusCodes.BAD_REQUEST)
 
-    const curTime = Math.floor(Date.now() / 1000)
+    const curTime = getCurTime()
     const server: Server = {
-        ip: body.ip,
+        ip: remoteIp,
         port: body.port,
         lastHeartbeat: curTime,
         expiresAt: curTime + HEARTBEAT_TTL
-    } 
+    }
+
+    const serverUid = `server:${server.ip}:${server.port}`
 
     // TODO: Let's try and use SRCDS server query to ping this IP?
     // if that doesn't work (as its node only?) we could at least
     // ping the IP + port just like we do on the client to at least
     // verify if the server actually is reachable to the open-internet
 
-    console.log("to store:", server)
+    // use connect from 'cloudflare:sockets'
 
-    const redis = getRedis(ctx)
+    // Prune expired entries to the set by the expiry time
+    await ctx.req.redis.zremrangebyscore("serversAliveRegister", 0, curTime)
 
-    await kvNamespace(ctx).SERVERS.put(`${body.ip}:${body.port}`, "", {
-        expiration: server.expiresAt,
-        metadata: server
-    })
+    // Add the current server to the register
+    await ctx.req.redis.zadd("serversAliveRegister", {member: serverUid, score: server.expiresAt})
+
+    // Add the server record with the correct TTL
+    await ctx.req.redis.set(serverUid, server, {exat: server.expiresAt})
+
+    // Store in cache
+    serverCache.set(serverUid, server)
 
     return ctx.json(server)
 })
 
+// TODO: Serverlist heartbeat die endpoint
