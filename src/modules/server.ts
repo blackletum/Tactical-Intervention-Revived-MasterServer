@@ -76,7 +76,7 @@ serverApi.post("/heartbeat", async (ctx) => {
 
     console.log("to store:", server)
 
-    await kvNamespace(ctx).SERVERS.put(`${body.ip}:${body.port}`, JSON.stringify(server), {
+    await kvNamespace(ctx).SERVERS.put(`${body.ip}:${body.port}`, "", {
         expiration: server.expiresAt,
         metadata: server
     })
