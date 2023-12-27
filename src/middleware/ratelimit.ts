@@ -1,5 +1,6 @@
 import { Context, Next } from "hono"
 import { getRemoteIp } from "../util/util"
+import { RateLimiterAbstract, RateLimiterMemory } from "rate-limiter-flexible"
 
 const standardRateLimit = new RateLimiterMemory({
     points: 12,
