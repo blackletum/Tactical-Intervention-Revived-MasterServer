@@ -2,59 +2,45 @@ import { version } from "../../package.json"
 import { StatusCodes } from "http-status-codes"
 import { Hono } from "hono"
 import { Bindings } from "hono/types"
-import { getCurTime, getRedis, getRemoteIp, kvNamespace } from "../util/util"
-import { rateLimitStrict } from "../middleware/ratelimit"
+import { getCurTime, getRemoteIp } from "../util/util"
+import { middlewareRateLimitStrict } from "../middleware/ratelimit"
 import { connect } from "cloudflare:sockets"
-import { LRUCache } from "lru-cache"
+import { serversTable } from "../util/schemas"
+import { eq, gt, lt } from "drizzle-orm"
+import { cache } from ".."
+import { DrizzleD1Database } from "drizzle-orm/d1"
 
 const HEARTBEAT_TTL = 60
+const SERVERLIST_CACHE_TTL = 5
 
 interface Server {
     ip: string
     port: number
-    lastHeartbeat: number
+    updatedAt: number
     expiresAt: number
 }
 
 export const serverApi = new Hono<{Bindings: Bindings}>()
-const serverCache = new LRUCache({ttl: 1000 * 30, ttlAutopurge: true})
-
-// TODO: Should we use KV here?
-// I'm thinking use D1 database instead, it has far more read/writes
-// plus it should update right away instead of being delayed?
-// Each time we get the server list check for TTL expiry
-
-// Another valid option would be MongoDB free-tier
-// it should provide basically unlimited storage
-// https://www.mongodb.com/developer/products/atlas/cloudflare-worker-rest-api/
 
 serverApi.get("/list", async (ctx) => {
     const curTime = getCurTime()
-    const serverList = await ctx.req.redis.zrange(
-        "serversAliveRegister",
-        curTime, 
-        curTime + HEARTBEAT_TTL,
-        {byScore: true}
-    )
+    const cachedServerList = cache.get("serverList")
+    const serverList = cachedServerList || await ctx.req.db.select()
+        .from(serversTable)
+        .where(gt(serversTable.expiresAt, curTime))
 
-    let servers: Server[] = []
-
-    for (const serverUid of serverList) {
-        const cachedServer = serverCache.get(<string>serverUid)
-        const serverVal = cachedServer || await ctx.req.redis.get(<string>serverUid)
-        if (!serverVal) continue
-
-        servers.push(<Server>serverVal)
+    if (!cachedServerList) {
+        cache.set("serverList", serverList, SERVERLIST_CACHE_TTL * 1000)
     }
 
     return ctx.json({
-        servers,
+        servers: serverList,
         msVersion: version
     })
 })
 
 // apply our strict rate-limiting to heartbeats
-serverApi.post("/heartbeat", rateLimitStrict, async (ctx) => {
+serverApi.post("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     let body
     
     try {
@@ -75,11 +61,11 @@ serverApi.post("/heartbeat", rateLimitStrict, async (ctx) => {
     const server: Server = {
         ip: remoteIp,
         port: body.port,
-        lastHeartbeat: curTime,
+        updatedAt: curTime,
         expiresAt: curTime + HEARTBEAT_TTL
     }
 
-    const serverUid = `server:${server.ip}:${server.port}`
+    const serverUid = `${server.ip}:${server.port}`
 
     // TODO: Let's try and use SRCDS server query to ping this IP?
     // if that doesn't work (as its node only?) we could at least
@@ -88,19 +74,55 @@ serverApi.post("/heartbeat", rateLimitStrict, async (ctx) => {
 
     // use connect from 'cloudflare:sockets'
 
-    // Prune expired entries to the set by the expiry time
-    await ctx.req.redis.zremrangebyscore("serversAliveRegister", 0, curTime)
+    await ctx.req.db.insert(serversTable)
+        .values({...{id: serverUid}, ...server})
+        .onConflictDoUpdate({target: serversTable.id, set: server})
 
-    // Add the current server to the register
-    await ctx.req.redis.zadd("serversAliveRegister", {member: serverUid, score: server.expiresAt})
-
-    // Add the server record with the correct TTL
-    await ctx.req.redis.set(serverUid, server, {exat: server.expiresAt})
-
-    // Store in cache
-    serverCache.set(serverUid, server)
+    // heartbeat will reset the cache
+    cache.delete("serverList")
 
     return ctx.json(server)
 })
 
-// TODO: Serverlist heartbeat die endpoint
+serverApi.delete("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
+    let body
+    
+    try {
+        body = await ctx.req.json<Server>()
+    } catch(ex) {}
+
+    if (!body) return ctx.text("", StatusCodes.BAD_REQUEST)
+
+    // in development, we cant get the remote ip, we'll use this fake ip instead!
+    const remoteIp = ctx.env.DEV ? "127.88.88.88" : getRemoteIp(ctx)
+
+    if ((!body.port || typeof(body.port) !== "number")
+    || (body.port < 0 || body.port > 9999)
+    || (remoteIp === "unknown"))
+        return ctx.text("", StatusCodes.BAD_REQUEST)
+
+    const serverUid = `${remoteIp}:${body.port}`
+
+    const deleted = await ctx.req.db.delete(serversTable)
+        .where(eq(serversTable.id, serverUid))
+        .returning()
+
+    if (deleted[0] === undefined) return ctx.text("", StatusCodes.BAD_REQUEST)
+
+    cache.delete("serverList")
+
+    return ctx.json({killed: deleted[0].id})
+})
+
+// TODO: Cleanup cron job, run every 10 mins and removes expired server rows
+
+export async function scheduledServerListCleanup(db: DrizzleD1Database) {
+    const curTime = getCurTime()
+
+    const deletedServers = await db.delete(serversTable)
+        .where(lt(serversTable.expiresAt, curTime))
+        .returning()
+
+    if (!deletedServers || deletedServers.length === 0) return
+    console.log(`Cleaned up ${deletedServers.length} expired servers from the database`)
+}

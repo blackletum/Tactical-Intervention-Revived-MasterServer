@@ -1,36 +1,38 @@
 import { Context, Next } from "hono"
-import { Ratelimit } from "@upstash/ratelimit"
 import { getRemoteIp } from "../util/util"
 
-const cache = new Map()
-const strictCache = new Map()
+const standardRateLimit = new RateLimiterMemory({
+    points: 12,
+    duration: 30
+})
 
-export async function rateLimit(ctx: Context, next: Next) {
-    const rateLimit = new Ratelimit({
-        prefix: "generic",
-        redis: ctx.req.redis,
-        limiter: Ratelimit.fixedWindow(9, "30 s"),
-        ephemeralCache: cache
-    })
+const strictRateLimit = new RateLimiterMemory({
+    points: 4,
+    duration: 70
+})
 
+async function rlConsume(rateLimit: RateLimiterAbstract, key: string, points: number = 1) {
+    try {
+        await rateLimit.consume(key, points)
+        return {success: true}
+    } catch(ex) {
+        if (ex instanceof Error) throw ex
+        return {success: false}
+    }
+}
+
+export async function middlewareRateLimit(ctx: Context, next: Next) {
     const userIp = getRemoteIp(ctx)
-    const data = await rateLimit.limit(userIp)
-    if (!data.success) return ctx.text("", 429)
+    const {success} = await rlConsume(standardRateLimit, userIp)
+    if (!success) return ctx.text("", 429)
     
     await next()
 }
 
-export async function rateLimitStrict(ctx: Context, next: Next) {
-    const rateLimit = new Ratelimit({
-        prefix: "strict",
-        redis: ctx.req.redis,
-        limiter: Ratelimit.tokenBucket(1, "40 s", 4),
-        ephemeralCache: strictCache
-    })
-
+export async function middlewareRateLimitStrict(ctx: Context, next: Next) {
     const userIp = getRemoteIp(ctx)
-    const data = await rateLimit.limit(userIp)
-    if (!data.success) return ctx.text("", 429)
+    const {success} = await rlConsume(strictRateLimit, userIp)
+    if (!success) return ctx.text("", 429)
     
     await next()
 }

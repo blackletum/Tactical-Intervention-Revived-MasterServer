@@ -199,3 +199,6 @@ Icon
 Network Trash Folder
 Temporary Items
 .apdisk
+
+# Drizzle files
+drizzle/**/*

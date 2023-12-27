@@ -1,9 +1,10 @@
-import { Redis } from "@upstash/redis/cloudflare"
+import { Client as LibsqlClient } from "@libsql/client/web"
+import { DrizzleD1Database } from "drizzle-orm/d1"
 import { Context as BaseContext, HonoRequest as BaseRequest } from "hono"
 
 declare module "hono" {
     interface HonoRequest extends BaseRequest {
-        redis: Redis
+        db: DrizzleD1Database
     }
 }
 
