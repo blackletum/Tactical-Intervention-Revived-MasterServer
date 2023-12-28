@@ -62,7 +62,7 @@ serverApi.post("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     const curTime = getCurTime()
     const server: Server = {
         ip: remoteIp,
-        port: body.port,
+        port: Math.floor(body.port),
         updatedAt: curTime,
         expiresAt: curTime + HEARTBEAT_TTL
     }
