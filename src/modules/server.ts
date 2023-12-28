@@ -9,6 +9,7 @@ import { serversTable } from "../util/schemas"
 import { eq, gt, lt } from "drizzle-orm"
 import { cache } from ".."
 import { DrizzleD1Database } from "drizzle-orm/d1"
+import { isIPv4 } from "is-ip"
 
 const HEARTBEAT_TTL = 60
 const SERVERLIST_CACHE_TTL = 5
@@ -42,7 +43,7 @@ serverApi.get("/list", async (ctx) => {
 // apply our strict rate-limiting to heartbeats
 serverApi.post("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     let body
-    
+
     try {
         body = await ctx.req.json<Server>()
     } catch(ex) {}
@@ -53,8 +54,9 @@ serverApi.post("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     const remoteIp = ctx.env.DEV ? "127.88.88.88" : getRemoteIp(ctx)
 
     if ((!body.port || typeof(body.port) !== "number")
-    || (body.port < 0 || body.port > 9999)
-    || (remoteIp === "unknown"))
+    || (body.port < 0 || body.port > 65535)
+    || (remoteIp === "unknown")
+	|| !isIPv4(remoteIp))
         return ctx.text("", StatusCodes.BAD_REQUEST)
 
     const curTime = getCurTime()
@@ -71,8 +73,8 @@ serverApi.post("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     // if that doesn't work (as its node only?) we could at least
     // ping the IP + port just like we do on the client to at least
     // verify if the server actually is reachable to the open-internet
-
     // use connect from 'cloudflare:sockets'
+	// tried this - doesnt seem to work :(
 
     await ctx.req.db.insert(serversTable)
         .values({...{id: serverUid}, ...server})
@@ -86,7 +88,7 @@ serverApi.post("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
 
 serverApi.delete("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     let body
-    
+
     try {
         body = await ctx.req.json<Server>()
     } catch(ex) {}

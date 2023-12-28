@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy --keep-vars",
-    "dev": "wrangler dev --test-scheduled",
+    "dev": "wrangler dev --test-scheduled --port 7044",
     "start": "wrangler dev",
     "schema-generate": "npx drizzle-kit generate:sqlite",
     "schema-publish-local": "wrangler d1 execute tacint-ms-db --local --file=./drizzle/XXXX_X_X.sql",

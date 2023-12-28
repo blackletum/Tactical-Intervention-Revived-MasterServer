@@ -15,7 +15,10 @@ export class LocalCache {
     get(key: string) {
         const cachedObj = this.cache.get(key)
         if (!cachedObj) return
-        if (cachedObj.ttl && cachedObj.startTime + cachedObj.ttl < Date.now()) return
+        if (cachedObj.ttl && cachedObj.startTime + cachedObj.ttl < Date.now()) {
+			this.cache.delete(key)
+			return
+		}
 
         return cachedObj.value
     }
