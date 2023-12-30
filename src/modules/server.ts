@@ -99,8 +99,9 @@ serverApi.delete("/heartbeat", middlewareRateLimitStrict, async (ctx) => {
     const remoteIp = ctx.env.DEV ? "127.88.88.88" : getRemoteIp(ctx)
 
     if ((!body.port || typeof(body.port) !== "number")
-    || (body.port < 0 || body.port > 9999)
-    || (remoteIp === "unknown"))
+    || (body.port < 0 || body.port > 65535)
+    || (remoteIp === "unknown")
+    || !isIPv4(remoteIp))
         return ctx.text("", StatusCodes.BAD_REQUEST)
 
     const serverUid = `${remoteIp}:${body.port}`
